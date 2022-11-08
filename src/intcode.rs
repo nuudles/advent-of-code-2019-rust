@@ -1,4 +1,8 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::mpsc::{channel, Receiver, Sender},
+    thread::{self, JoinHandle},
+};
 
 #[derive(Debug)]
 enum Parameter {
@@ -141,7 +145,7 @@ pub struct Intcode {
 }
 
 impl Intcode {
-    pub fn new(input: String) -> Self {
+    pub fn new(input: &str) -> Self {
         Self {
             memory: input
                 .split(',')
@@ -152,14 +156,17 @@ impl Intcode {
     }
 
     pub fn run(&self, initial_values: HashMap<u64, i64>) -> HashMap<u64, i64> {
-        self.run_with_input(initial_values, 0)
+        let (sender, recv) = channel();
+        let handle = self.run_with_input(initial_values, recv, sender);
+        handle.join().expect("Failed to run")
     }
 
     pub fn run_with_input(
         &self,
         initial_values: HashMap<u64, i64>,
-        input: i64,
-    ) -> HashMap<u64, i64> {
+        input_receiver: Receiver<i64>,
+        output_sender: Sender<i64>,
+    ) -> JoinHandle<HashMap<u64, i64>> {
         let mut memory = self.memory.clone();
         let mut position = 0u64;
 
@@ -167,66 +174,69 @@ impl Intcode {
             memory.insert(k, v);
         }
 
-        while let Some(opcode) = Opcode::new(&memory, position) {
-            match opcode {
-                Opcode::Add(a, b, o) => {
-                    memory.insert(o.position(), a.value(&memory) + b.value(&memory));
-                    position += 4;
-                }
-                Opcode::Multiply(a, b, o) => {
-                    memory.insert(o.position(), a.value(&memory) * b.value(&memory));
-                    position += 4;
-                }
-                Opcode::Input(o) => {
-                    memory.insert(o.position(), input);
-                    position += 2;
-                }
-                Opcode::Output(a) => {
-                    println!("{}", a.value(&memory));
-                    position += 2;
-                }
-                Opcode::JumpIfTrue(a, p) => {
-                    if a.value(&memory) != 0 {
-                        position = p.value(&memory) as u64;
-                    } else {
-                        position += 3;
+        thread::spawn(move || {
+            while let Some(opcode) = Opcode::new(&memory, position) {
+                match opcode {
+                    Opcode::Add(a, b, o) => {
+                        memory.insert(o.position(), a.value(&memory) + b.value(&memory));
+                        position += 4;
                     }
-                }
-                Opcode::JumpIfFalse(a, p) => {
-                    if a.value(&memory) == 0 {
-                        position = p.value(&memory) as u64;
-                    } else {
-                        position += 3;
+                    Opcode::Multiply(a, b, o) => {
+                        memory.insert(o.position(), a.value(&memory) * b.value(&memory));
+                        position += 4;
                     }
-                }
-                Opcode::LessThan(a, b, o) => {
-                    memory.insert(
-                        o.position(),
-                        if a.value(&memory) < b.value(&memory) {
-                            1
+                    Opcode::Input(o) => {
+                        let value = input_receiver.recv();
+                        memory.insert(o.position(), value.unwrap_or_default());
+                        position += 2;
+                    }
+                    Opcode::Output(a) => {
+                        _ = output_sender.send(a.value(&memory));
+                        position += 2;
+                    }
+                    Opcode::JumpIfTrue(a, p) => {
+                        if a.value(&memory) != 0 {
+                            position = p.value(&memory) as u64;
                         } else {
-                            0
-                        },
-                    );
-                    position += 4;
-                }
-                Opcode::Equals(a, b, o) => {
-                    memory.insert(
-                        o.position(),
-                        if a.value(&memory) == b.value(&memory) {
-                            1
+                            position += 3;
+                        }
+                    }
+                    Opcode::JumpIfFalse(a, p) => {
+                        if a.value(&memory) == 0 {
+                            position = p.value(&memory) as u64;
                         } else {
-                            0
-                        },
-                    );
-                    position += 4;
-                }
-                _ => {
-                    break;
+                            position += 3;
+                        }
+                    }
+                    Opcode::LessThan(a, b, o) => {
+                        memory.insert(
+                            o.position(),
+                            if a.value(&memory) < b.value(&memory) {
+                                1
+                            } else {
+                                0
+                            },
+                        );
+                        position += 4;
+                    }
+                    Opcode::Equals(a, b, o) => {
+                        memory.insert(
+                            o.position(),
+                            if a.value(&memory) == b.value(&memory) {
+                                1
+                            } else {
+                                0
+                            },
+                        );
+                        position += 4;
+                    }
+                    _ => {
+                        break;
+                    }
                 }
             }
-        }
 
-        memory
+            memory
+        })
     }
 }
