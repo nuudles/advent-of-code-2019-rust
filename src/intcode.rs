@@ -8,27 +8,30 @@ use std::{
 enum Parameter {
     Position(u64),
     Immediate(i64),
+    Relative(i64),
 }
 
 impl Parameter {
     fn new(indicator: i64, value: &i64) -> Self {
         match indicator {
             0 => Self::Position(*value as u64),
-            _ => Self::Immediate(*value),
+            1 => Self::Immediate(*value),
+            _ => Self::Relative(*value),
         }
     }
 
-    fn value(&self, memory: &HashMap<u64, i64>) -> i64 {
+    fn value(&self, memory: &HashMap<u64, i64>, base: i64) -> i64 {
         match self {
-            Self::Position(position) => *memory.get(position).unwrap_or(&0),
             Self::Immediate(value) => *value,
+            _ => *memory.get(&self.position(base)).unwrap_or(&0),
         }
     }
 
-    fn position(&self) -> u64 {
+    fn position(&self, base: i64) -> u64 {
         match self {
             Self::Position(position) => *position,
             Self::Immediate(_) => 0,
+            Self::Relative(offset) => (base + *offset) as u64,
         }
     }
 }
@@ -43,6 +46,7 @@ enum Opcode {
     JumpIfFalse(Parameter, Parameter),
     LessThan(Parameter, Parameter, Parameter),
     Equals(Parameter, Parameter, Parameter),
+    AdjustRelativeBase(Parameter),
     Terminate,
 }
 
@@ -134,6 +138,10 @@ impl Opcode {
                     memory.get(&(position + 3)).unwrap_or(&0),
                 ),
             )),
+            9 => Some(Self::AdjustRelativeBase(Parameter::new(
+                (opcode / 100) % 10,
+                memory.get(&(position + 1)).unwrap_or(&0),
+            ))),
             _ => Some(Self::Terminate),
         }
     }
@@ -175,43 +183,51 @@ impl Intcode {
         }
 
         thread::spawn(move || {
+            let mut base = 0i64;
+
             while let Some(opcode) = Opcode::new(&memory, position) {
                 match opcode {
                     Opcode::Add(a, b, o) => {
-                        memory.insert(o.position(), a.value(&memory) + b.value(&memory));
+                        memory.insert(
+                            o.position(base),
+                            a.value(&memory, base) + b.value(&memory, base),
+                        );
                         position += 4;
                     }
                     Opcode::Multiply(a, b, o) => {
-                        memory.insert(o.position(), a.value(&memory) * b.value(&memory));
+                        memory.insert(
+                            o.position(base),
+                            a.value(&memory, base) * b.value(&memory, base),
+                        );
                         position += 4;
                     }
                     Opcode::Input(o) => {
                         let value = input_receiver.recv();
-                        memory.insert(o.position(), value.unwrap_or_default());
+                        memory.insert(o.position(base), value.unwrap_or_default());
                         position += 2;
                     }
                     Opcode::Output(a) => {
-                        _ = output_sender.send(a.value(&memory));
+                        _ = output_sender.send(a.value(&memory, base));
                         position += 2;
                     }
                     Opcode::JumpIfTrue(a, p) => {
-                        if a.value(&memory) != 0 {
-                            position = p.value(&memory) as u64;
+                        if a.value(&memory, base) != 0 {
+                            position = p.value(&memory, base) as u64;
                         } else {
                             position += 3;
                         }
                     }
                     Opcode::JumpIfFalse(a, p) => {
-                        if a.value(&memory) == 0 {
-                            position = p.value(&memory) as u64;
+                        if a.value(&memory, base) == 0 {
+                            position = p.value(&memory, base) as u64;
                         } else {
                             position += 3;
                         }
                     }
                     Opcode::LessThan(a, b, o) => {
                         memory.insert(
-                            o.position(),
-                            if a.value(&memory) < b.value(&memory) {
+                            o.position(base),
+                            if a.value(&memory, base) < b.value(&memory, base) {
                                 1
                             } else {
                                 0
@@ -221,14 +237,18 @@ impl Intcode {
                     }
                     Opcode::Equals(a, b, o) => {
                         memory.insert(
-                            o.position(),
-                            if a.value(&memory) == b.value(&memory) {
+                            o.position(base),
+                            if a.value(&memory, base) == b.value(&memory, base) {
                                 1
                             } else {
                                 0
                             },
                         );
                         position += 4;
+                    }
+                    Opcode::AdjustRelativeBase(o) => {
+                        base += o.value(&memory, base);
+                        position += 2;
                     }
                     _ => {
                         break;

@@ -39,7 +39,7 @@ pub fn part2(input: String) {
     for permutation in (5..10).permutations(5) {
         let (mut senders, mut receivers): (Vec<_>, Vec<_>) = (0..6).map(|_| channel()).unzip();
 
-        let mut handles = permutation
+        let handles = permutation
             .iter()
             .enumerate()
             .map(|(i, p)| {
