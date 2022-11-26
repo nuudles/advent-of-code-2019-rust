@@ -117,5 +117,3 @@ pub fn part1(input: String) {
 fn lcd(a: usize, b: usize) -> usize {
     a * b / a.gcd(b)
 }
-
-pub fn part2(input: String) {}
